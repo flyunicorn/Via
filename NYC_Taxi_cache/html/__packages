@@ -1,0 +1,13 @@
+base
+readr
+data.table
+magrittr
+dplyr
+bit
+ff
+ggplot2
+scales
+RColorBrewer
+extrafont
+hexbin
+lubridate

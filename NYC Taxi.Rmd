@@ -1,0 +1,320 @@
+---
+title: "R Notebook"
+author: "Cynthia Li, CFA"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message = F)
+```
+# Notebook Setup
+```{r}
+setwd("~/Documents/Via")
+library(readr)
+library(data.table)
+library(magrittr)
+library(dplyr)
+library(ff)
+library(ggplot2)
+library(scales)
+library(RColorBrewer)
+library(extrafont)
+library(hexbin)
+library(lubridate)
+```
+
+## Load in fare and ride data of 2013
+```{r, cache=T}
+fare <- read_csv('trip_fare_1.csv')
+ride <- read_csv('trip_data_1.csv')
+# ride <- fread('trip_data_1.csv')
+```
+
+## Source functions and parameters
+```{r, include=FALSE}
+theme_map_dark <- function(palate_color = "Greys") {
+  
+  palate <- brewer.pal(palate_color, n=9)
+  color.background = "black"
+  color.grid.minor = "black"
+  color.grid.major = "black"
+  color.axis.text = palate[1]
+  color.axis.title = palate[1]
+  color.title = palate[1]
+  
+  font.title <- "Comic Sans MS"
+  font.axis <- "Arial Rounded MT Bold"
+  
+  theme_bw(base_size=5) +
+    theme(panel.background=element_rect(fill=color.background, color=color.background)) +
+    theme(plot.background=element_rect(fill=color.background, color=color.background)) +
+    theme(panel.border=element_rect(color=color.background)) +
+    theme(panel.grid.major=element_blank()) +
+    theme(panel.grid.minor=element_blank()) +
+    theme(axis.ticks=element_blank()) +
+    theme(legend.background = element_rect(fill=color.background)) +
+    theme(legend.text = element_text(size=3,colour=color.axis.title,family=font.axis)) +
+    theme(legend.title = element_blank(), legend.position="top", legend.direction="horizontal") +
+    theme(legend.key.width=unit(1, "cm"), legend.key.height=unit(0.25, "cm"), legend.margin=unit(-0.5,"cm")) +
+    theme(plot.title=element_text(colour=color.title,family=font.title, size=10)) +
+    theme(axis.text.x=element_blank()) +
+    theme(axis.text.y=element_blank()) +
+    theme(axis.title.y=element_blank()) +
+    theme(axis.title.x=element_blank()) +
+    theme(plot.margin = unit(c(0.0, -0.5, -1, -0.75), "cm")) +
+    theme(strip.background = element_rect(fill=color.background, color=color.background),strip.text=element_text(size=7,colour=color.axis.title,family=font.title))
+}
+```
+
+## Airport Coordinates Definition
+### * JFK: 40.6413° N, 73.7781° W
+### * LaGuardia: 40.7769° N, 73.8740° W
+
+```{r, include=T}
+jfk <- data.frame(x=c(-73.81,-73.77), y=c(40.635,40.67))
+laguardia <- data.frame(x=c(-73.88,-73.858), y=c(40.764,40.779))
+```
+
+## `Tag` __airports__ and manipulate dataframe (details in codes)
+```{r, include=F}
+airport <- cbind(fare[,c("pickup_datetime", "fare_amount", "surcharge")], 
+                 ride[,c("trip_time_in_secs", "passenger_count", "pickup_longitude", 
+                         "pickup_latitude", "dropoff_longitude", "dropoff_latitude")]) 
+
+airport$from_jfk <- ifelse((airport$pickup_longitude > -73.81) & (airport$pickup_longitude < -73.77) &
+                                   (airport$pickup_latitude > 40.635) & (airport$pickup_latitude < 40.67), 1, 0)
+
+airport$from_laguardia <- ifelse((airport$pickup_longitude > -73.88) & (airport$pickup_longitude < -73.858) &
+                                   (airport$pickup_latitude > 40.764) & (airport$pickup_latitude < 40.779), 1, 0)
+
+airport$to_jfk <- ifelse((airport$dropoff_longitude > -73.81) & (airport$dropoff_longitude < -73.77) &
+                                   (airport$dropoff_latitude > 40.635) & (airport$dropoff_latitude < 40.67), 1, 0)
+
+airport$to_laguardia <- ifelse((airport$dropoff_longitude > -73.88) & (airport$dropoff_longitude < -73.858) &
+                                   (airport$dropoff_latitude > 40.764) & (airport$dropoff_latitude < 40.779), 1, 0)
+
+airport$airport <- airport$to_jfk+airport$to_laguardia+airport$from_jfk+airport$from_laguardia
+
+only_airport <- airport %>% filter(airport == 1 | airport ==2)
+
+map1 <- only_airport %>% select(pickup_longitude, pickup_latitude, fare_amount, trip_time_in_secs) %>% 
+  round(4) %>% group_by(pickup_longitude,pickup_latitude) %>% 
+  summarise(count=n(), fare = sum(fare_amount), time=mean(trip_time_in_secs)) 
+```
+
+# Pickups
+
+## Visulization --- Pickups by __Count__
+```{r, warning=F, message=FALSE, echo=F}
+ggplot(map1, aes(x=pickup_longitude,y=pickup_latitude, color=count)) + geom_point(size=0.8) +
+  scale_x_continuous(limits=c(-74.0324, -73.7621)) + scale_y_continuous(limits=c(40.625, 40.830)) +
+  theme_map_dark() + scale_color_gradient(high='yellow', low="blue", trans="log") +
+  labs(title = "Taxi Pickups on NYC Map") + theme(legend.position="none") +
+  coord_equal() + geom_point(data=jfk, aes(x=x, y=y),color='yellow', size=1) + geom_point(data=laguardia, aes(x=x, y=y),color='yellow',size=1)
+```
+
+
+* __The bright highlights of the airports and midtown Times Square show the most taxi ride counts.__
+* __Yellow dots are placed to pinpoint airports coordinates.__  
+
+## Visulization --- Pickups by __Fare Revenue__
+```{r, echo=F}
+total_rev <- function(x, threshold = 10^4) {
+  if (sum(x) < threshold) {return (NA)}
+  else {return (sum(x))}
+}
+
+ggplot(map1, aes(x=pickup_longitude,y=pickup_latitude, z=fare)) +
+  geom_point(size=0.4, color="darkgrey") +
+  stat_summary_hex(fun = total_rev, bins=100, alpha=0.9) +
+  scale_x_continuous(limits=c(-74.0324, -73.7621)) +
+  scale_y_continuous(limits=c(40.628, 40.830)) +
+  theme_map_dark() +
+  scale_fill_gradient(low="pink", high="red", labels=dollar, trans="log", breaks=c(10^(1:2))) +
+  labs(title = "NYC Taxis Total Revenue -- Pickup Location 2013") +
+  coord_equal()
+```
+
+* __The bright highlights of the airports, midtown Times Square and Financial District show the most fare revenue from taxi rides.__  
+
+## Visualization --- Pickups by __Fare Per Second__
+```{r, echo=F}
+total_rev <- function(x, threshold = 10) {
+  if (sum(x) < threshold) {return (NA)}
+  else {return (sum(x))}
+}
+ggplot(map1, aes(x=pickup_longitude,y=pickup_latitude, z=fare/time)) +
+  geom_point(size=0.06, color="darkgrey") +
+  stat_summary_hex(fun = total_rev, bins=100, alpha=0.8) +
+  scale_x_continuous(limits=c(-74.0324, -73.7621)) +
+  scale_y_continuous(limits=c(40.628, 40.830)) +
+  theme_map_dark() +
+  scale_fill_gradient(low="pink", high="red", labels=dollar, trans="log", breaks=c(10^(1:5))) +
+  labs(title = "NYC Taxis Ride Efficiency -- Pickup Location 2013") +
+  coord_equal()
+```
+
+* __The bright highlights of the airports, and midtown Times Square show the most efficient taxi rides.__  
+
+# Dropoffs
+
+## Manipulate dataframe 
+```{r}
+map2 <- only_airport %>% select(dropoff_longitude, dropoff_latitude, fare_amount, trip_time_in_secs) %>% 
+  round(4) %>% group_by(dropoff_longitude, dropoff_latitude) %>% 
+  summarise(count=n(), fare = sum(fare_amount), time=mean(trip_time_in_secs)) 
+```
+
+## Visulization --- Dropoffs by __Count__
+```{r, echo=F}
+ggplot(map2 %>% filter(count > 2), aes(x=dropoff_longitude,y=dropoff_latitude, color=count)) + geom_point(size=0.5) +
+  scale_x_continuous(limits=c(-74.0324, -73.7621)) + scale_y_continuous(limits=c(40.628, 40.830)) +
+  theme_map_dark() + scale_color_gradient(low="blue", high='yellow', trans="log") +
+  labs(title = "Taxi Dropoff on NYC Map") + theme(legend.position="none") + coord_equal()
+```
+
+## Visulization --- Dropoffs by __Fare Revenue__
+```{r, echo=F}
+total_rev <- function(x, threshold = 10^4) {
+  if (sum(x) < threshold) {return (NA)}
+  else {return (sum(x))}
+}
+ggplot(map2 %>% filter(count>2), aes(x=dropoff_longitude,y=dropoff_latitude, z=fare)) +
+  geom_point(size=0.3, color="darkgrey") +
+  stat_summary_hex(fun = total_rev, bins=100, alpha=0.9) +
+  scale_x_continuous(limits=c(-74.0324, -73.7621)) +
+  scale_y_continuous(limits=c(40.628, 40.830)) +
+  theme_map_dark() +
+  scale_fill_gradient(low="pink", high="red", labels=dollar, trans="log", breaks=c(10^(2:6))) +
+  labs(title = "NYC Taxis Total Revenue -- Dropoff Location 2013") +
+  coord_equal()
+```
+
+## Visualization --- Dropoffs by __Fare Per Second__
+```{r, echo=F}
+total_rev <- function(x, threshold = 10^3) {
+  if (sum(x) < threshold) {return (NA)}
+  else {return (sum(x))}
+}
+ggplot(map2 %>% filter(count > 2), aes(x=dropoff_longitude,y=dropoff_latitude, z=fare/count)) +
+  geom_point(size=0.3, color="darkgrey") +
+  stat_summary_hex(fun = total_rev, bins=100, alpha=0.8) +
+  scale_x_continuous(limits=c(-74.0324, -73.7621)) +
+  scale_y_continuous(limits=c(40.628, 40.830)) +
+  theme_map_dark() +
+  scale_fill_gradient(low="pink", high="red", labels=dollar, trans="log", breaks=c(10^(3:5))) +
+  labs(title = "NYC Taxis Ride Efficiency -- Dropoff Location 2013") +
+  coord_equal()
+```
+
+* __Interestingly, for dropoff rides, midtown Times Square actually show more efficiency than airports, which means taxi drivers earn more fare revenue per one unit of time in second.__  
+
+# Analysis Questions: 
+
+•	How would you assess the efficiency of aggregating rides to/from each airport?
+
+> I would use `fare revenue`/`trip_time_in_secs` --- __cost per second__ to assess efficiency of aggregating rides to/from airports. Because the idea is that the higher fare revenue earned by one unit of time (second), the more efficient the ride is in economic sense.
+
+•	How does this compare to our current area of service (e.g. the Upper East Side)?
+
+> From graph, it shows UES generate similar fare revenue compared with to/from airports. Two other area of service worth noting are Mid-town (Times Square), and Financial District. The Upper West Side has potential too.  
+
+•	Which of the airport expansion options is most beneficial and why? 
+
+> LaGuardia airport expansion is most beneficial compared with JFK. It has relative less pickup and dropoff points but demand is not low. Plus rides to/from LaGuardia are economicly efficient.  
+
+## Manipulate dataframe
+```{r}
+map3 <- only_airport %>% select(pickup_longitude,pickup_latitude, surcharge) %>% round(4) %>%
+  group_by(pickup_longitude,pickup_latitude)%>% summarise(count=n(), surcharge = sum(surcharge)) 
+```
+
+## Visualizataion --- Pickups by __Surcharge__
+```{r, echo=F}
+total_rev <- function(x, threshold = 50) {
+  if (sum(x) < threshold) {return (NA)}
+  else {return (sum(x))}
+}
+ggplot(map3, aes(x=pickup_longitude,y=pickup_latitude, z=surcharge)) +
+  geom_point(size=0.5, color="darkgrey") +
+  stat_summary_hex(fun = total_rev, bins=100, alpha=0.9) +
+  scale_x_continuous(limits=c(-74.0324, -73.7621)) +
+  scale_y_continuous(limits=c(40.628, 40.830)) +
+  theme_map_dark() +
+  scale_fill_gradient(low="pink", high="red", labels=dollar, trans="log", breaks=c(10^(4:6))) +
+  labs(title = "NYC Taxis Surcharge -- Pickup Location 2013") +
+  coord_equal()
+```
+
+* __Pickups from airports rides collect most surcharges per ride.__
+
+## Manipulate dataframe
+```{r}
+map4 <- only_airport %>% select(dropoff_longitude,dropoff_latitude, surcharge) %>% round(4) %>%
+  group_by(dropoff_longitude,dropoff_latitude)%>% summarise(count=n(), surcharge = sum(surcharge)) 
+```
+
+## Visualization --- Dropoffs by __Surcharge__
+```{r, echo=F}
+total_rev <- function(x, threshold = 50) {
+  if (sum(x) < threshold) {return (NA)}
+  else {return (sum(x))}
+}
+ggplot(map4 %>% filter(count > 2), aes(x=dropoff_longitude,y=dropoff_latitude, z=surcharge)) +
+  geom_point(size=0.5, color="darkgrey") +
+  stat_summary_hex(fun = total_rev, bins=100, alpha=0.9) +
+  scale_x_continuous(limits=c(-74.0324, -73.7621)) +
+  scale_y_continuous(limits=c(40.628, 40.830)) +
+  theme_map_dark() +
+  scale_fill_gradient(low="pink", high="red", labels=dollar, trans="log", breaks=c(10^(3:5))) +
+  labs(title = "NYC Taxis Surcharge -- Dropoff Location 2013") +
+  coord_equal()
+```
+
+* __Another insight shows from dropoff map that La Guardia actually incur more surcharge than JFK. Hence expanding to LaGuardia may be more beneficial economicly.__ 
+
+•	Would you launch airports as a separate service or as a new service? Why?
+
+> My thought process of whether to launch airports as a separate service is to look at demand and revenue relations. Based on graphs above, both metrics exhibit favorable signal for such consideration. In addition, people are inclined to request airport ride in advance on their phones, which fits Via's operating business well. 
+
+## Visualization --- Ride __Time__ Analysis
+```{r, echo=F}
+only_airport$pickup_datetime <- ymd_hms(only_airport$pickup_datetime)
+only_airport$hour <- hour(only_airport$pickup_datetime)
+only_airport$wday <- wday(only_airport$pickup_datetime)
+
+only_airport %>% ggplot(aes(hour)) + geom_bar(aes(fill = factor(hour))) + theme(legend.position="none") +
+  ggtitle("NYC Taxi Ride Counts by Hour for Each Weekday") + 
+  theme(plot.title = element_text(lineheight=.8, face="bold")) + facet_grid(~ wday)
+```
+
+* __By package definition, Sunday is 1.__
+
+•	Would you launch airport rides during all our hours of service (6am-12am on weekdays and 10am-12am on Saturdays) or only for certain hours? Which hours?
+
+> As shown in graph above, the current hours of service seem to almost cover most high demand time. That said, I would allocate more resources around mid afternoon, especially on Wednesday and Thursday. 
+
+## Visualization --- Fare __Per Passenger__ Analysis
+```{r, echo=F}
+only_airport %>% ggplot(aes(factor(hour), fill=factor(hour))) + stat_summary_bin(aes(y = fare_amount/passenger_count), fun.y ="mean", geom ="bar")+
+  theme(legend.position="none") + ggtitle("NYC Taxi Ride Fare Per Passenger by Hour and by Weekday") + 
+  theme(plot.title = element_text(lineheight=.8, face="bold")) + facet_wrap(~wday) + xlab("hour") +
+  theme(axis.title.x = element_text(face="bold", size=12), axis.text.x = element_text(angle=90, vjust=0.5, size=7))
+
+```
+
+•	How would you price airport rides and why (our current model is a $5.00 flat fee weekdays before 9pm and $5.95 weeknights after 9pm and all day Saturdays)?
+
+> According to taxi ride fare, discounted by number of passenger, I still think $5 flat fee is quite low, compared with almost $30 dollar normal rate. If it is Via's initial strategy to use advantageous price incentive to start the business, it makes sense. However, as Via establishes itself, it may not be optimal anymore to lay too much money on the table. Hence, I would suggest a different price tier. In order to make profit and alleviate traffic congestion, I will charge $10 to $15 flat fee, including tax (the exact amount can vary according to model accuracy) for regular operating hours, and $1 to $5 surcharge for rush hours between 6am to 7am and 18pm to 19pm.  
+
+# Qualitative Questions: 
+
+•	What additional data would you like to see in order to answer questions 1-5 more confidently and how would you incorporate it?
+
+> I would want to see through what channel are those taxi rides are requested. For example, we may see growing usage of mobile application for airports rides as people may feel more assured to request ride in advance on their mobile phones, versas traditionally getting cabs on the street. This will also provide more information if we need to launch airport rides as separate service. 
+
+•	How might your answer change over time? What Via data would you monitor to ensure the proposed expansion was a good business decision?
+
+> My answer might change along with the change of competitive landscape of On-demand transportation. Therefore, I would monitor Via's competitors' data to assess the efficiency of the proposed expansion. 
